@@ -8,18 +8,19 @@ import * as voice from './voice.js';
 import * as api from './provider.js';
 import { createOrb } from './orb.js';
 
-const APP_VERSION = 'v2';
+const APP_VERSION = 'v3';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const app = $('#app');
 
-const S = { sessions: [], cards: [], mistakes: [], settings: { minutes: 15, style: [], pass: '', fa: true }, days: [], skip: [], orb: null };
+const S = { sessions: [], cards: [], mistakes: [], settings: { minutes: 15, style: [], pass: '', fa: true, natural: false }, days: [], skip: [], orb: null };
 
 async function load() {
   [S.sessions, S.cards, S.mistakes] = await Promise.all([db.all('sessions'), db.all('cards'), db.all('mistakes')]);
   S.settings = { ...S.settings, ...((await db.get('settings')) || {}) };
   S.days = (await db.get('days')) || [];
   api.setPass(S.settings.pass);
+  api.setNaturalVoice(S.settings.natural);
 }
 const saveSettings = () => db.set('settings', S.settings);
 async function markDay() {
@@ -108,7 +109,7 @@ async function startSession(rec) {
   <section class="screen session">
     <div class="top"><span>${esc(ch.name)} · ${esc(ch.line)}</span><span id="clock"></span></div>
     <button class="orb-wrap orb-btn" id="orb" aria-label="Talk"></button>
-    <p class="hint" id="hint">Connecting…</p>
+    <p class="hint" id="hint">${esc(ch.name)} is getting ready…</p>
     <div class="caption"><p class="them" id="them"></p><p class="fa them-fa" id="themFa" hidden></p><p class="you" id="you" hidden></p></div>
     <div class="help" id="help" hidden></div>
     <p class="err" id="err" hidden></p>
@@ -442,12 +443,23 @@ function settingsView() {
       <form class="type" id="passForm"><input id="pass" class="field" type="password" autocomplete="off" value="${esc(S.settings.pass)}" placeholder="Pass"><button class="pill solid">Save</button></form>
       <p class="small" id="status"></p>
     </div>
+    <div class="section"><p class="label">Voice</p>
+      <p class="small">Fast uses your iPhone’s voice and answers right away. Natural sounds more human but adds a few seconds to every answer.</p>
+      <div class="chips" style="justify-content:flex-start">
+        <button class="chip" data-voice="fast" aria-pressed="${!S.settings.natural}">Fast</button>
+        <button class="chip" data-voice="natural" aria-pressed="${S.settings.natural}">Natural</button>
+      </div>
+    </div>
     <div class="section"><p class="label">Privacy</p>
       <p class="small">Your voice is turned into text on the server and never stored. Conversations stay on this phone. Free AI services may use what you say to improve their models, so don’t share real business or personal data.</p>
     </div>
     <div class="section"><p class="label">Data</p><button class="pill" id="wipe">Delete everything on this phone</button></div>
   </section>`;
   $('#back').onclick = styleView;
+  app.querySelectorAll('[data-voice]').forEach(b => b.onclick = async () => {
+    S.settings.natural = b.dataset.voice === 'natural'; api.setNaturalVoice(S.settings.natural); await saveSettings();
+    app.querySelectorAll('[data-voice]').forEach(x => x.setAttribute('aria-pressed', x === b));
+  });
   const st = $('#status');
   $('#passForm').onsubmit = async e => {
     e.preventDefault();

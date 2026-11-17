@@ -5,10 +5,20 @@ import { CHARACTERS, scenarioById } from './content.js';
 
 const URL_ = `${SUPABASE_URL}/functions/v1/lang`;
 let pass = '';
+let natural = false; // Natural (Gemini) voice is slower; the phone's own voice answers instantly.
 export const setPass = p => { pass = String(p || '').trim(); };
+export const setNaturalVoice = v => { natural = !!v; };
 export const isDemo = () => !pass;
 
-async function call(body, timeout = 60000) {
+async function call(body, timeout = 45000, retry = 1) {
+  try { return await once(body, timeout); }
+  catch (e) {
+    // One quiet retry for network hiccups (mobile data, VPN switching); never for a wrong pass.
+    if (retry > 0 && !e.status) return call(body, timeout, retry - 1);
+    throw e;
+  }
+}
+async function once(body, timeout) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeout);
   try {
@@ -29,19 +39,19 @@ export const ping = () => call({ action: 'ping' }, 15000);
 export async function open({ system, scenario }) {
   if (isDemo()) return demoOpen(scenario);
   const voice = CHARACTERS[scenarioById(scenario).who].voice;
-  return call({ action: 'open', system, voice, format: 'json' });
+  return call({ action: 'open', system, voice, format: 'json', speak: natural }, 30000);
 }
 
 // audio: base64 + mime, or text when typed.
 export async function turn({ system, messages, audio, mime, text, scenario }) {
   if (isDemo()) return demoTurn(scenario, text, messages);
   const voice = CHARACTERS[scenarioById(scenario).who].voice;
-  return call({ action: 'turn', system, messages, audio, mime, text, voice, format: 'json' });
+  return call({ action: 'turn', system, messages, audio, mime, text, voice, format: 'json', speak: natural }, 45000, audio ? 0 : 1);
 }
 
 export async function coach({ system, transcript }) {
   if (isDemo()) return { json: JSON.stringify(/prepare an Iranian/.test(system) ? DEMO_PREP : DEMO_COACH) };
-  return call({ action: 'coach', system, transcript }, 90000);
+  return call({ action: 'coach', system, transcript }, 60000);
 }
 
 // ---- demo
