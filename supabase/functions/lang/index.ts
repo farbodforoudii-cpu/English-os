@@ -140,7 +140,7 @@ function spoken(text: string) {
 }
 async function partner(j: Record<string, any>, messages: Msg[]) {
   const json = j.format === 'json';
-  const r = await chat(String(j.system || ''), messages, json, json ? 900 : 400, 0.9);
+  const r = await chat(String(j.system || ''), messages, json, 2048, 0.9);
   return { reply: json ? spoken(r.text) : r.text, raw: r.text, provider: r.provider };
 }
 
@@ -171,7 +171,7 @@ Deno.serve(async req => {
         return out(200, { reply: r.reply, raw: r.raw, audio, provider: r.provider, ms: Date.now() - t0 });
       }
       case 'coach': {
-        const r = await chat(String(j.system || ''), [{ role: 'user', text: String(j.transcript || '') }], true, 2500);
+        const r = await chat(String(j.system || ''), [{ role: 'user', text: String(j.transcript || '') }], true, 8192);
         return out(200, { json: r.text, provider: r.provider, ms: Date.now() - t0 });
       }
       case 'tts':
