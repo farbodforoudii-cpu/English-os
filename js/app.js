@@ -45,7 +45,7 @@ function mountOrb(el, size) {
   S.orb = createOrb(c, { size });
   return S.orb;
 }
-const orbSize = (k = 1) => Math.round(Math.min(220, window.innerWidth * 0.52, window.innerHeight * 0.26) * k);
+const orbSize = (k = 1) => Math.round(Math.min(220, window.innerWidth * 0.52, window.innerHeight * 0.23) * k);
 
 // ---------- Home
 function home() {

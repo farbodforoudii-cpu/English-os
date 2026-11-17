@@ -86,3 +86,10 @@ textarea,.field{width:100%;border-radius:18px;border:1px solid var(--line);backg
 
 @media (min-height:820px){.home .orb-wrap{margin-top:24px}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+@media (max-height:700px){
+  h1{font-size:30px;margin-top:8px}
+  .meta{margin-top:8px;font-size:14px}
+  .chips{margin-top:14px}
+  .chip{height:40px}
+  .home .link{padding:6px}
+}
