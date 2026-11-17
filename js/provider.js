@@ -1,0 +1,82 @@
+// Talks to the «lang» Edge Function. Without a pass the app runs in demo mode: same flow, canned lines,
+// the phone's own voice, so the interface can be tried and tested without any key.
+import { SUPABASE_URL } from './config.js';
+import { CHARACTERS, scenarioById } from './content.js';
+
+const URL_ = `${SUPABASE_URL}/functions/v1/lang`;
+let pass = '';
+export const setPass = p => { pass = String(p || '').trim(); };
+export const isDemo = () => !pass;
+
+async function call(body, timeout = 60000) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const r = await fetch(URL_, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-lang-pass': pass }, body: JSON.stringify(body), signal: ctl.signal });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(d.error || r.statusText), { status: r.status });
+    return d;
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('The server took too long. Try again.');
+    if (/failed to fetch|load failed|network/i.test(e.message)) throw new Error('No connection to the server. Check the internet or VPN.');
+    if (e.status === 403) throw new Error('The server pass is wrong. Check it in Settings.');
+    throw e;
+  } finally { clearTimeout(t); }
+}
+
+export const ping = () => call({ action: 'ping' }, 15000);
+
+export async function open({ system, scenario }) {
+  if (isDemo()) return demoOpen(scenario);
+  const voice = CHARACTERS[scenarioById(scenario).who].voice;
+  return call({ action: 'open', system, voice });
+}
+
+// audio: base64 + mime, or text when typed.
+export async function turn({ system, messages, audio, mime, text, scenario }) {
+  if (isDemo()) return demoTurn(scenario, text, messages);
+  const voice = CHARACTERS[scenarioById(scenario).who].voice;
+  return call({ action: 'turn', system, messages, audio, mime, text, voice });
+}
+
+export async function coach({ system, transcript }) {
+  if (isDemo()) return { json: JSON.stringify(DEMO_COACH) };
+  return call({ action: 'coach', system, transcript }, 90000);
+}
+
+// ---- demo
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const DEMO_OPEN = {
+  marco: 'Ciao Farbod! Good to finally talk. So, you want our extra virgin oil for your first order. What volume are you thinking about?',
+  lena: 'Hello Farbod, thanks for making time. I have read your offer. Before we go further, can you tell me where the product is made and what certificates you have?',
+  sam: 'Hey Farbod! I saw an interesting case this week and wanted your opinion. How do you usually decide when an athlete is ready to run again after an ACL reconstruction?',
+  priya: 'Hi Farbod! I heard you have an idea for an app. Tell me in two sentences: who is it for, and what problem does it solve?',
+  maya: 'Hey Farbod! It’s been a while. How was your week? Anything fun, or was it all work?',
+};
+const DEMO_REPLIES = [
+  'Interesting. Can you tell me a bit more about that?',
+  'I see what you mean. But why do you think that is the best option?',
+  'Okay, that makes sense. And what would you do if it doesn’t work?',
+  'Good point. Let me push back a little, though. Isn’t that a bit risky?',
+];
+async function demoOpen(scenario) {
+  await wait(600);
+  return { reply: DEMO_OPEN[scenarioById(scenario).who], audio: null, demo: true };
+}
+async function demoTurn(scenario, text, messages) {
+  await wait(900);
+  const you = text || '(demo mode: your voice is not sent anywhere)';
+  return { you, reply: DEMO_REPLIES[messages.filter(m => m.role === 'model').length % DEMO_REPLIES.length], audio: null, demo: true };
+}
+const DEMO_COACH = {
+  summary: 'Demo feedback. Connect the server in Settings to get real feedback on what you said.',
+  scores: { fluency: 6, accuracy: 5, vocab: 6 },
+  findings: [
+    { said: 'I am agree with you', better: 'I agree with you', why: '“Agree” is a verb, so you don’t need “am”.', fa: '«agree» خودش فعل است و «am» لازم ندارد.', key: 'agree' },
+    { said: 'We need more cheap price', better: 'We need a lower price', why: 'We say a price is high or low, not cheap or expensive.', fa: 'برای قیمت از high و low استفاده می‌شود.', key: 'lower price' },
+  ],
+  words: [
+    { word: 'lead time', meaning: 'the time between ordering and receiving goods', fa: 'زمان تحویل', example: 'What is your lead time for 2 tonnes?' },
+    { word: 'to meet halfway', meaning: 'to agree to a compromise', fa: 'کوتاه آمدن دو طرف', example: 'Can we meet halfway on the price?' },
+  ],
+};
