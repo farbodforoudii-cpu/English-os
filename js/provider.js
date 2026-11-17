@@ -29,18 +29,18 @@ export const ping = () => call({ action: 'ping' }, 15000);
 export async function open({ system, scenario }) {
   if (isDemo()) return demoOpen(scenario);
   const voice = CHARACTERS[scenarioById(scenario).who].voice;
-  return call({ action: 'open', system, voice });
+  return call({ action: 'open', system, voice, format: 'json' });
 }
 
 // audio: base64 + mime, or text when typed.
 export async function turn({ system, messages, audio, mime, text, scenario }) {
   if (isDemo()) return demoTurn(scenario, text, messages);
   const voice = CHARACTERS[scenarioById(scenario).who].voice;
-  return call({ action: 'turn', system, messages, audio, mime, text, voice });
+  return call({ action: 'turn', system, messages, audio, mime, text, voice, format: 'json' });
 }
 
 export async function coach({ system, transcript }) {
-  if (isDemo()) return { json: JSON.stringify(DEMO_COACH) };
+  if (isDemo()) return { json: JSON.stringify(/prepare an Iranian/.test(system) ? DEMO_PREP : DEMO_COACH) };
   return call({ action: 'coach', system, transcript }, 90000);
 }
 
@@ -59,15 +59,28 @@ const DEMO_REPLIES = [
   'Okay, that makes sense. And what would you do if it doesn’t work?',
   'Good point. Let me push back a little, though. Isn’t that a bit risky?',
 ];
+const DEMO_HELP = [{ en: 'It was pretty busy, but good.', fa: 'نسبتاً شلوغ بود، ولی خوب.' }, { en: 'Not bad. What about you?', fa: 'بد نبود. تو چطور؟' }, { en: 'Sorry, could you say that again?', fa: 'ببخشید، میشه دوباره بگی؟' }];
+const raw = (reply, fa) => JSON.stringify({ reply, fa, suggestions: DEMO_HELP });
 async function demoOpen(scenario) {
   await wait(600);
-  return { reply: DEMO_OPEN[scenarioById(scenario).who], audio: null, demo: true };
+  return { raw: raw(DEMO_OPEN[scenarioById(scenario).who], 'سلام فربد! خیلی وقته ندیدمت. هفته‌ات چطور بود؟ خوش گذشت یا همه‌اش کار بود؟ (ترجمهٔ نمونه در حالت Demo)'), audio: null, demo: true };
 }
 async function demoTurn(scenario, text, messages) {
   await wait(900);
   const you = text || '(demo mode: your voice is not sent anywhere)';
-  return { you, reply: DEMO_REPLIES[messages.filter(m => m.role === 'model').length % DEMO_REPLIES.length], audio: null, demo: true };
+  const reply = DEMO_REPLIES[messages.filter(m => m.role === 'model').length % DEMO_REPLIES.length];
+  return { you, raw: raw(reply, 'ترجمهٔ فارسی این جمله اینجا نشان داده می‌شود (حالت Demo).'), audio: null, demo: true };
 }
+const DEMO_PREP = {
+  tip: 'آرام و کوتاه جواب بده؛ اگر کلمه‌ای یادت نیامد، با کلمه‌های ساده توضیحش بده.',
+  phrases: [
+    { en: 'How have you been?', fa: 'این مدت چطور بودی؟', example: 'Hi Maya! How have you been?', example_fa: 'سلام مایا! این مدت چطور بودی؟' },
+    { en: 'pretty busy', fa: 'نسبتاً شلوغ', example: 'My week was pretty busy with work.', example_fa: 'هفته‌ام با کار نسبتاً شلوغ بود.' },
+    { en: 'to catch up', fa: 'از حال هم خبر گرفتن', example: 'It’s nice to catch up with you.', example_fa: 'خوبه که از حال هم خبر می‌گیریم.' },
+    { en: 'What about you?', fa: 'تو چطور؟', example: 'I trained a lot. What about you?', example_fa: 'من زیاد تمرین کردم. تو چطور؟' },
+    { en: 'the highlight of my week', fa: 'بهترین لحظهٔ هفته‌ام', example: 'The highlight of my week was a new client.', example_fa: 'بهترین اتفاق هفته‌ام یک مشتری جدید بود.' },
+  ],
+};
 const DEMO_COACH = {
   summary: 'Demo feedback. Connect the server in Settings to get real feedback on what you said.',
   scores: { fluency: 6, accuracy: 5, vocab: 6 },

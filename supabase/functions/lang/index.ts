@@ -54,11 +54,11 @@ async function stt(audio: string, mime: string): Promise<string> {
 }
 
 // ---- replies (Gemini, then Groq)
-async function geminiChat(system: string, messages: Msg[], json: boolean, maxTokens: number) {
+async function geminiChat(system: string, messages: Msg[], json: boolean, maxTokens: number, temp: number) {
   const body: Record<string, unknown> = {
     systemInstruction: { parts: [{ text: system }] },
     contents: messages.map(m => ({ role: m.role, parts: [{ text: m.text }] })),
-    generationConfig: { temperature: json ? 0.3 : 0.9, maxOutputTokens: maxTokens, ...(json ? { responseMimeType: 'application/json' } : {}) },
+    generationConfig: { temperature: temp, maxOutputTokens: maxTokens, ...(json ? { responseMimeType: 'application/json' } : {}) },
   };
   const r = await fetch(`${GEMINI}/${M.chat()}:generateContent`, {
     method: 'POST', headers: { 'x-goog-api-key': env('GEMINI_API_KEY'), 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -70,12 +70,12 @@ async function geminiChat(system: string, messages: Msg[], json: boolean, maxTok
   return text;
 }
 
-async function groqChat(system: string, messages: Msg[], json: boolean, maxTokens: number) {
+async function groqChat(system: string, messages: Msg[], json: boolean, maxTokens: number, temp: number) {
   const r = await fetch(`${GROQ}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${env('GROQ_API_KEY')}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: M.groq(), temperature: json ? 0.3 : 0.9, max_completion_tokens: maxTokens,
+      model: M.groq(), temperature: temp, max_completion_tokens: maxTokens,
       messages: [{ role: 'system', content: system }, ...messages.map(m => ({ role: m.role === 'model' ? 'assistant' : 'user', content: m.text }))],
       ...(json ? { response_format: { type: 'json_object' } } : {}),
     }),
@@ -86,13 +86,13 @@ async function groqChat(system: string, messages: Msg[], json: boolean, maxToken
   return text;
 }
 
-async function chat(system: string, messages: Msg[], json = false, maxTokens = 400) {
+async function chat(system: string, messages: Msg[], json = false, maxTokens = 400, temp = json ? 0.3 : 0.9) {
   const errors: string[] = [];
   if (env('GEMINI_API_KEY')) {
-    try { return { text: await geminiChat(system, messages, json, json ? 2500 : maxTokens), provider: 'gemini' }; } catch (e) { errors.push(String(e)); }
+    try { return { text: await geminiChat(system, messages, json, maxTokens, temp), provider: 'gemini' }; } catch (e) { errors.push(String(e)); }
   }
   if (env('GROQ_API_KEY')) {
-    try { return { text: await groqChat(system, messages, json, json ? 2500 : maxTokens), provider: 'groq' }; } catch (e) { errors.push(String(e)); }
+    try { return { text: await groqChat(system, messages, json, maxTokens, temp), provider: 'groq' }; } catch (e) { errors.push(String(e)); }
   }
   throw new Error(errors.join(' | ') || 'no chat provider configured');
 }
@@ -130,6 +130,20 @@ async function tts(text: string, voice: string): Promise<string | null> {
   } catch { return null; }
 }
 
+// The partner may answer as JSON (reply + Persian + suggestions). Only the reply is spoken.
+function spoken(text: string) {
+  const a = text.indexOf('{'), b = text.lastIndexOf('}');
+  if (a >= 0 && b > a) {
+    try { const d = JSON.parse(text.slice(a, b + 1)); if (d && typeof d.reply === 'string' && d.reply.trim()) return d.reply.trim(); } catch { /* plain */ }
+  }
+  return text;
+}
+async function partner(j: Record<string, any>, messages: Msg[]) {
+  const json = j.format === 'json';
+  const r = await chat(String(j.system || ''), messages, json, json ? 900 : 400, 0.9);
+  return { reply: json ? spoken(r.text) : r.text, raw: r.text, provider: r.provider };
+}
+
 Deno.serve(async req => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
   if (req.method !== 'POST') return out(405, { error: 'POST only' });
@@ -146,18 +160,18 @@ Deno.serve(async req => {
         const you = j.audio ? await stt(j.audio, String(j.mime || 'audio/mp4')) : String(j.text || '').trim();
         if (!you) return out(200, { you: '', reply: '', audio: null, empty: true });
         const messages: Msg[] = [...(j.messages || []), { role: 'user', text: you }];
-        const r = await chat(String(j.system || ''), messages);
-        const audio = j.speak === false ? null : await tts(r.text, String(j.voice || ''));
-        return out(200, { you, reply: r.text, audio, provider: r.provider, ms: Date.now() - t0 });
+        const r = await partner(j, messages);
+        const audio = j.speak === false ? null : await tts(r.reply, String(j.voice || ''));
+        return out(200, { you, reply: r.reply, raw: r.raw, audio, provider: r.provider, ms: Date.now() - t0 });
       }
       // The character speaks first.
       case 'open': {
-        const r = await chat(String(j.system || ''), [{ role: 'user', text: String(j.kickoff || 'Start the conversation.') }]);
-        const audio = j.speak === false ? null : await tts(r.text, String(j.voice || ''));
-        return out(200, { reply: r.text, audio, provider: r.provider, ms: Date.now() - t0 });
+        const r = await partner(j, [{ role: 'user', text: String(j.kickoff || 'Start the conversation.') }]);
+        const audio = j.speak === false ? null : await tts(r.reply, String(j.voice || ''));
+        return out(200, { reply: r.reply, raw: r.raw, audio, provider: r.provider, ms: Date.now() - t0 });
       }
       case 'coach': {
-        const r = await chat(String(j.system || ''), [{ role: 'user', text: String(j.transcript || '') }], true);
+        const r = await chat(String(j.system || ''), [{ role: 'user', text: String(j.transcript || '') }], true, 2500);
         return out(200, { json: r.text, provider: r.provider, ms: Date.now() - t0 });
       }
       case 'tts':

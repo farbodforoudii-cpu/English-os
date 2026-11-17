@@ -20,7 +20,60 @@ export function partnerSystem({ scenario, level = 2, style = [], minutes = 15 })
     `Keep realistic facts: do not invent wrong technical, medical or trade information. If you are not sure, say so like a real person would.`,
     `The session lasts about ${minutes} minutes. Do not ask for his real personal or business data; invented examples are fine.`,
     style.length ? `His personal style rules (follow them): ${style.map(s => `- ${s}`).join(' ')}` : '',
+    PARTNER_FORMAT,
   ].filter(Boolean).join('\n');
+}
+
+// The partner answers as JSON so the app can show a Persian translation and help him answer, with no extra call.
+export const PARTNER_FORMAT = [
+  `Output format: return only JSON, no other text:`,
+  `{"reply": "what you say out loud, in English", "fa": "natural Persian translation of your reply", "suggestions": [{"en": "a possible answer Farbod could give", "fa": "its Persian meaning"}]}`,
+  `"suggestions" has 2 or 3 short, different answers he could say next (for example agree / disagree / ask a question), at his level, using useful words for this situation. Only "reply" is spoken.`,
+].join('\n');
+
+// Defensive parse of a partner turn. If the model ignored the format, the whole text is the reply.
+export function parsePartner(text) {
+  const raw = String(text || '').trim();
+  const s = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+  const a = s.indexOf('{'), b = s.lastIndexOf('}');
+  if (a >= 0 && b > a) {
+    try {
+      const d = JSON.parse(s.slice(a, b + 1));
+      if (d && typeof d.reply === 'string' && d.reply.trim()) {
+        return {
+          reply: d.reply.trim(),
+          fa: String(d.fa || '').trim(),
+          suggestions: (Array.isArray(d.suggestions) ? d.suggestions : []).filter(x => x && x.en).slice(0, 3)
+            .map(x => ({ en: String(x.en).trim(), fa: String(x.fa || '').trim() })),
+        };
+      }
+    } catch { /* fall through */ }
+  }
+  return { reply: raw.replace(/^[{\["]+|[}\]"]+$/g, '').trim(), fa: '', suggestions: [] };
+}
+
+// Warm-up before a session: the phrases he will need.
+export function prepSystem({ scenario, level = 2 }) {
+  const sc = scenarioById(scenario);
+  const lv = LEVELS[Math.max(0, Math.min(4, level - 1))];
+  return [
+    `You prepare an Iranian adult English learner (level ${lv.cefr}) for a spoken conversation.`,
+    `Situation: ${sc.title}. His goal: ${sc.goal}`,
+    `Give the 5 most useful words or phrases he will need in this exact situation, and one example sentence each that he could actually say. Keep facts correct.`,
+    `Return only JSON: {"tip": "one short sentence of advice in Persian for this conversation", "phrases": [{"en": "phrase", "fa": "معنی فارسی", "example": "example sentence he could say", "example_fa": "ترجمهٔ فارسی جمله"}]}`,
+  ].join('\n');
+}
+
+export function parsePrep(text) {
+  const s = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+  const a = s.indexOf('{'), b = s.lastIndexOf('}');
+  if (a < 0 || b < a) return null;
+  try {
+    const d = JSON.parse(s.slice(a, b + 1));
+    const phrases = (Array.isArray(d.phrases) ? d.phrases : []).filter(p => p && p.en).slice(0, 6)
+      .map(p => ({ en: String(p.en).trim(), fa: String(p.fa || '').trim(), example: String(p.example || '').trim(), example_fa: String(p.example_fa || '').trim() }));
+    return phrases.length ? { tip: String(d.tip || '').trim(), phrases } : null;
+  } catch { return null; }
 }
 
 export const kickoff = scenario => `[The session starts now. Speak first, in character.]`;

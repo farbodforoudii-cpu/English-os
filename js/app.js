@@ -2,18 +2,18 @@
 import { db, uid, requestPersistence } from './db.js';
 import { recommend } from './recommend.js';
 import { CHARACTERS, DOMAINS, LEVELS, scenarioById } from './content.js';
-import { partnerSystem, kickoff, COACH_SYSTEM, transcriptText, parseCoach } from './prompts.js';
+import { partnerSystem, kickoff, COACH_SYSTEM, transcriptText, parseCoach, parsePartner, prepSystem, parsePrep } from './prompts.js';
 import { newCard, review, dueCards, preview, RATINGS } from './cards.js';
 import * as voice from './voice.js';
 import * as api from './provider.js';
 import { createOrb } from './orb.js';
 
-const APP_VERSION = 'v1';
+const APP_VERSION = 'v2';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const app = $('#app');
 
-const S = { sessions: [], cards: [], mistakes: [], settings: { minutes: 15, style: [], pass: '' }, days: [], skip: [], orb: null };
+const S = { sessions: [], cards: [], mistakes: [], settings: { minutes: 15, style: [], pass: '', fa: true }, days: [], skip: [], orb: null };
 
 async function load() {
   [S.sessions, S.cards, S.mistakes] = await Promise.all([db.all('sessions'), db.all('cards'), db.all('mistakes')]);
@@ -66,7 +66,7 @@ function home() {
     <div class="chips" role="group" aria-label="Session length">
       ${[5, 15, 30].map(m => `<button class="chip" data-min="${m}" aria-pressed="${S.settings.minutes === m}">${m} min</button>`).join('')}
     </div>
-    <div class="center"><button class="link" id="another">Something else</button></div>
+    <div class="center links"><button class="link" id="prep">Prepare first <span class="fa-inline">· آماده‌سازی</span></button><button class="link" id="another">Something else</button></div>
     <nav class="nav">
       <button data-go="review">Review${due ? ` <b>${due}</b>` : ''}</button>
       <button data-go="progress">Progress</button>
@@ -76,6 +76,7 @@ function home() {
   mountOrb($('#orb'), orbSize()).set('idle');
   $('#orb').onclick = () => { voice.unlock(); startSession(rec); };
   app.querySelectorAll('.chip').forEach(b => b.onclick = () => { S.settings.minutes = +b.dataset.min; saveSettings(); home(); });
+  $('#prep').onclick = () => prepView(rec);
   $('#another').onclick = () => { S.skip.push(rec.scenario); if (S.skip.length > 12) S.skip = []; home(); };
   app.querySelectorAll('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
 }
@@ -108,10 +109,11 @@ async function startSession(rec) {
     <div class="top"><span>${esc(ch.name)} · ${esc(ch.line)}</span><span id="clock"></span></div>
     <button class="orb-wrap orb-btn" id="orb" aria-label="Talk"></button>
     <p class="hint" id="hint">Connecting…</p>
-    <div class="caption"><p class="them" id="them"></p><p class="you" id="you" hidden></p></div>
+    <div class="caption"><p class="them" id="them"></p><p class="fa them-fa" id="themFa" hidden></p><p class="you" id="you" hidden></p></div>
+    <div class="help" id="help" hidden></div>
     <p class="err" id="err" hidden></p>
     <form class="type" id="typeForm" hidden><input id="typeIn" autocomplete="off" placeholder="Type instead…" enterkeyhint="send"><button class="pill" type="submit">Send</button></form>
-    <div class="bar"><button class="pill" id="kbd" aria-label="Type instead">Type</button><button class="pill solid" id="end">Finish</button></div>
+    <div class="bar"><button class="pill" id="faBtn" aria-pressed="${S.settings.fa}">فارسی</button><button class="pill" id="helpBtn">Help me</button><button class="pill" id="kbd" aria-label="Type instead">Type</button><button class="pill solid" id="end">Finish</button></div>
   </section>`;
   const orb = mountOrb($('#orb'), orbSize(0.85));
   orb.set('think');
@@ -122,12 +124,14 @@ async function startSession(rec) {
   }, 500);
   $('#orb').onclick = onOrbTap;
   $('#end').onclick = finish;
+  $('#faBtn').onclick = () => { S.settings.fa = !S.settings.fa; saveSettings(); $('#faBtn').setAttribute('aria-pressed', S.settings.fa); showFa(); };
+  $('#helpBtn').onclick = showHelp;
   $('#kbd').onclick = () => { const f = $('#typeForm'); f.hidden = !f.hidden; if (!f.hidden) $('#typeIn').focus(); };
   $('#typeForm').onsubmit = e => { e.preventDefault(); const t = $('#typeIn').value.trim(); if (t) { $('#typeIn').value = ''; sendTurn({ text: t }); } };
 
   try { await voice.openMic(); } catch (e) { showErr('Microphone is off. Allow it in Settings, or use Type.'); }
   try {
-    const r = await api.open({ system: SES.system, scenario: sc.id });
+    const r = withParts(await api.open({ system: SES.system, scenario: sc.id }));
     if (!SES || SES.ended) return;
     SES.turns.push({ role: 'model', text: r.reply });
     await say(r);
@@ -141,6 +145,9 @@ function showErr(m) { const e = $('#err'); if (e) { e.textContent = m; e.hidden 
 async function say(r) {
   if (!SES || SES.ended) return;
   $('#them').textContent = r.reply;
+  SES.last = r;
+  showFa();
+  const h = $('#help'); h.hidden = true; h.innerHTML = '';
   S.orb.set('speak', voice.outLevel);
   hint('Tap to interrupt');
   try {
@@ -179,7 +186,7 @@ async function sendTurn({ audio, mime, text }) {
   if (text) showYou(text);
   try {
     const messages = [{ role: 'user', text: kickoff(SES.scenario.id) }, ...SES.turns];
-    const r = await api.turn({ system: SES.system, messages, audio, mime, text, scenario: SES.scenario.id });
+    const r = withParts(await api.turn({ system: SES.system, messages, audio, mime, text, scenario: SES.scenario.id }));
     if (!SES || SES.ended) return;
     SES.busy = false;
     if (r.empty || !r.you) { S.orb.set('idle'); hint('I didn’t catch that · tap and try again'); return; }
@@ -196,6 +203,34 @@ async function sendTurn({ audio, mime, text }) {
   }
 }
 function showYou(t) { const y = $('#you'); y.textContent = t; y.hidden = false; }
+
+// The partner's answer may carry a Persian translation and suggested answers.
+function withParts(r) {
+  if (r.empty) return r;
+  const p = parsePartner(r.raw || r.reply);
+  return { ...r, reply: r.reply && !r.raw ? r.reply : p.reply, fa: p.fa, suggestions: p.suggestions };
+}
+function showFa() {
+  const el = $('#themFa');
+  if (!el || !SES || !SES.last) return;
+  el.textContent = SES.last.fa || '';
+  el.hidden = !S.settings.fa || !SES.last.fa;
+}
+// "Help me": stop listening, show ways to answer. Tap one to hear it, then say it yourself.
+function showHelp() {
+  if (!SES || !SES.last) return;
+  if (SES.rec) SES.rec.cancel();
+  voice.stopPlayback();
+  const h = $('#help');
+  const list = SES.last.suggestions || [];
+  h.innerHTML = list.length
+    ? `<p class="label">You could say… <span class="muted">(tap to hear, then say it)</span></p>` + list.map((x, i) => `<button class="sugg" data-i="${i}"><span class="en">${esc(x.en)}</span>${x.fa ? `<span class="fa">${esc(x.fa)}</span>` : ''}</button>`).join('')
+    : `<p class="small">No suggestions for this line. Try a short answer, or ask: “Sorry, could you say that again?”</p>`;
+  h.hidden = false;
+  h.querySelectorAll('.sugg').forEach(b => b.onclick = () => voice.speak(list[+b.dataset.i].en, { rate: 0.85 }));
+  S.orb.set('idle');
+  hint('Read it, then tap the orb and say your answer');
+}
 
 function onOrbTap() {
   voice.unlock();
@@ -263,7 +298,7 @@ function summary(ses, err) {
     <div class="section"><p class="label">How was this session?</p><div class="feedback">
       ${[['easier', 'Too hard'], ['same', 'Just right'], ['harder', 'Too easy'], ['other', 'Different style']].map(([k, l]) => `<button class="chip" data-fb="${k}" aria-pressed="false">${l}</button>`).join('')}
     </div></div>
-    <button class="done-btn" id="done">Done</button>
+    ${c && (c.findings.length + c.words.length) ? `<button class="done-btn" id="quiz">Test me now</button><button class="pill wide" id="done">Later</button>` : `<button class="done-btn" id="done">Done</button>`}
   </section>`;
   wireFa(app);
   app.querySelectorAll('[data-fb]').forEach(b => b.onclick = async () => {
@@ -272,43 +307,97 @@ function summary(ses, err) {
     if (!ses.demo) await db.put('sessions', ses);
   });
   $('#done').onclick = () => { S.skip = []; home(); };
+  const q = $('#quiz');
+  if (q) q.onclick = () => { S.skip = []; reviewView(ses.demo ? { demo: demoCards(ses) } : { source: ses.id }); };
 }
 
 // ---------- Review (works offline)
-function reviewView() {
+// opts.source: only the cards from one session (the quiz right after it); opts.demo: throwaway cards.
+function reviewView(opts = {}) {
   stopSession();
-  const due = dueCards(S.cards);
+  const quiz = !!(opts.source || opts.demo);
+  const pool = opts.demo || (opts.source ? S.cards.filter(c => c.source === opts.source) : S.cards);
+  const done = opts.done || new Set();
+  const due = (quiz ? pool : dueCards(pool)).filter(c => !done.has(c.id));
   if (!due.length) {
+    const msg = quiz ? `Quiz done: ${done.size} of ${done.size} answered. These cards come back in Review when it is time.`
+      : S.cards.length ? 'All caught up. New cards come from your sessions.' : 'No cards yet. Finish a session and your coach adds the best ones here.';
     app.innerHTML = `<section class="screen"><div class="top"><button id="back">‹ Back</button><span></span></div>
-      <p class="empty">${S.cards.length ? 'All caught up. New cards come from your sessions.' : 'No cards yet. Finish a session and your coach adds the best ones here.'}</p></section>`;
-    $('#back').onclick = home; return;
+      <p class="empty">${msg}</p>${quiz ? '<button class="done-btn" id="fin">Done</button>' : ''}</section>`;
+    $('#back').onclick = home; const f = $('#fin'); if (f) f.onclick = home; return;
   }
   const c = due[0];
-  const q = c.kind === 'fix' ? `<p class="small">Say it better</p><p class="q said" style="margin-top:8px">${esc(c.front)}</p>` : `<p class="small">Which word or phrase means…</p><p class="q" style="margin-top:8px">${esc(c.front)}</p>`;
+  const q = c.kind === 'fix'
+    ? `<p class="small">How do you say this correctly?</p><p class="q said" style="margin-top:8px">${esc(c.front)}</p>`
+    : `<p class="small">Which English word or phrase means…</p><p class="q" style="margin-top:8px">${esc(c.front)}</p>${c.fa ? `<p class="fa fa-line" style="text-align:center">${esc(c.fa)}</p>` : ''}`;
   app.innerHTML = `<section class="screen">
-    <div class="top"><button id="back">‹ Back</button><span>${due.length} left</span></div>
-    <div class="review-card" id="rc">${q}${faBlock(c.kind === 'word' ? c.fa : '')}
-      <div class="a" id="ans" hidden><p class="better">${esc(c.back)}</p>${c.note ? `<p class="small">${esc(c.note)}</p>` : ''}${c.kind === 'fix' ? faBlock(c.fa) : ''}</div>
+    <div class="top"><button id="back">‹ Back</button><span>${quiz ? 'Quiz · ' : ''}${due.length} left</span></div>
+    <div class="review-card" id="rc">${q}
+      <div class="a" id="ans" hidden><p class="better">${esc(c.back)}</p>${c.note ? `<p class="small">${esc(c.note)}</p>` : ''}${c.kind === 'fix' ? faBlock(c.fa) : ''}
+        <button class="fa-toggle" id="hear">▶︎ Hear it again</button></div>
     </div>
-    <div class="bar" id="show"><button class="pill" id="hear">Hear it</button><button class="pill solid" id="reveal">Show answer</button></div>
-    <div class="rates" id="rates" hidden>${RATINGS.map((r, i) => `<button data-r="${r.id}">${r.label}<small>${preview(c)[i]}</small></button>`).join('')}</div>
+    <p class="hint" id="say" style="margin-top:16px">Say your answer out loud first <span class="fa-inline">· اول بلند بگو</span></p>
+    <div class="bar" id="show"><button class="pill solid wide" id="reveal">Show answer</button></div>
+    <div class="rates" id="rates" hidden>${RATINGS.map((r, i) => `<button data-r="${r.id}">${r.label}<small>${opts.demo ? '' : preview(c)[i]}</small></button>`).join('')}</div>
   </section>`;
   wireFa(app);
   $('#back').onclick = home;
-  $('#hear').onclick = () => voice.speak(c.back);
-  $('#reveal').onclick = () => { $('#ans').hidden = false; $('#show').hidden = true; $('#rates').hidden = false; voice.speak(c.back); };
+  $('#hear').onclick = () => voice.speak(c.back, { rate: 0.85 });
+  $('#reveal').onclick = () => { $('#ans').hidden = false; $('#show').hidden = true; $('#say').hidden = true; $('#rates').hidden = false; voice.speak(c.back, { rate: 0.85 }); };
   app.querySelectorAll('[data-r]').forEach(b => b.onclick = async () => {
-    const next = review(c, +b.dataset.r);
-    await db.put('cards', next);
-    S.cards[S.cards.findIndex(x => x.id === c.id)] = next;
-    // A fix that is now remembered for days closes its mistake.
-    if (c.kind === 'fix' && new Date(next.due) - Date.now() > 3 * 86400000) {
-      const m = S.mistakes.find(x => x.better === c.back && x.open);
-      if (m) { m.open = false; await db.put('mistakes', m); }
+    if (!opts.demo) {
+      const next = review(c, +b.dataset.r);
+      await db.put('cards', next);
+      S.cards[S.cards.findIndex(x => x.id === c.id)] = next;
+      // A fix that is now remembered for days closes its mistake.
+      if (c.kind === 'fix' && new Date(next.due) - Date.now() > 3 * 86400000) {
+        const m = S.mistakes.find(x => x.better === c.back && x.open);
+        if (m) { m.open = false; await db.put('mistakes', m); }
+      }
+      await markDay();
     }
-    await markDay();
-    reviewView();
+    done.add(c.id);
+    reviewView({ ...opts, done });
   });
+}
+
+// Demo sessions save nothing, but the quiz can still be tried with the demo feedback.
+function demoCards(ses) {
+  const now = new Date();
+  return [
+    ...ses.coach.findings.map((f, i) => newCard({ id: 'demo-f' + i, kind: 'fix', front: f.said, back: f.better, note: f.why, fa: f.fa, domain: ses.domain, now })),
+    ...ses.coach.words.map((w, i) => newCard({ id: 'demo-w' + i, kind: 'word', front: w.meaning, back: w.word, note: w.example, fa: w.fa, domain: ses.domain, now })),
+  ];
+}
+
+// ---------- Prepare: the phrases you will need, before you talk
+async function prepView(rec) {
+  stopSession();
+  const sc = scenarioById(rec.scenario);
+  app.innerHTML = `<section class="screen">
+    <div class="top"><button id="back">‹ Back</button><span>Prepare</span></div>
+    <h2 style="margin-top:18px">${esc(sc.title)}</h2>
+    <p class="small">${esc(sc.goal)}</p>
+    <div id="prepBody" class="section"><p class="hint">Finding the phrases you will need…</p></div>
+    <button class="done-btn" id="go">Start talking</button>
+  </section>`;
+  $('#back').onclick = home;
+  $('#go').onclick = () => { voice.unlock(); startSession(rec); };
+  const key = 'prep:' + sc.id + ':' + rec.level;
+  let d = await db.get(key);
+  if (!d) {
+    try { d = parsePrep((await api.coach({ system: prepSystem({ scenario: sc.id, level: rec.level }), transcript: 'Prepare me.' })).json); if (d && !api.isDemo()) await db.set(key, d); }
+    catch (e) { const b = $('#prepBody'); if (b) b.innerHTML = `<p class="err" style="text-align:left">${esc(e.message)}</p>`; return; }
+  }
+  const body = $('#prepBody');
+  if (!body) return;
+  if (!d) { body.innerHTML = '<p class="small">Could not prepare phrases this time. You can still start.</p>'; return; }
+  body.innerHTML = (d.tip ? `<p class="fa fa-line">${esc(d.tip)}</p>` : '') + d.phrases.map((p, i) => `
+    <button class="card phrase" data-i="${i}">
+      <span class="better">${esc(p.en)}</span> <span class="fa fa-line">${esc(p.fa)}</span>
+      ${p.example ? `<span class="small">“${esc(p.example)}”</span>` : ''}${p.example_fa ? `<span class="fa fa-line">${esc(p.example_fa)}</span>` : ''}
+    </button>`).join('') + '<p class="small muted" style="margin-top:10px">Tap a phrase to hear it. Say it out loud once.</p>';
+  body.querySelectorAll('.phrase').forEach(b => b.onclick = () => { const p = d.phrases[+b.dataset.i]; voice.speak(p.example || p.en, { rate: 0.85 }); });
 }
 
 // ---------- Progress
