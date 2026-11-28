@@ -324,7 +324,7 @@ function reviewView(opts = {}) {
     const msg = quiz ? `Quiz done: ${done.size} of ${done.size} answered. These cards come back in Review when it is time.`
       : S.cards.length ? 'All caught up. New cards come from your sessions.' : 'No cards yet. Finish a session and your coach adds the best ones here.';
     app.innerHTML = `<section class="screen"><div class="top"><button id="back">‹ Back</button><span></span></div>
-      <p class="empty">${msg}</p>${quiz ? '<button class="done-btn" id="fin">Done</button>' : ''}</section>`;
+      <p class="empty">${msg}</p>${quiz ? '<button class="done-btn" id="fin">Done</button>' : !S.cards.length ? '<button class="done-btn" id="fin">Start a session</button>' : ''}</section>`;
     $('#back').onclick = home; const f = $('#fin'); if (f) f.onclick = home; return;
   }
   const c = due[0];
